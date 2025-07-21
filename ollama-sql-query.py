@@ -1,3 +1,22 @@
+"""
+Library Database Natural Language SQL Query Tool
+
+This script connects to a Microsoft SQL Server database, verifies required tables,
+initializes a SQL-to-Natural Language Query Engine using LlamaIndex and Ollama LLM,
+and allows users to query the database using natural language.
+
+Modules Used:
+- pyodbc: For ODBC-based MSSQL connection
+- sqlalchemy: For engine and schema inspection
+- llama_index: For natural language SQL generation
+- logging: For application-level logging
+- time: For measuring query execution time
+- tabulate: For formatted display of query results
+
+Example:
+    $ python library_query_tool.py
+"""
+
 import pyodbc
 from tabulate import tabulate
 from sqlalchemy import create_engine, inspect, URL, text
@@ -7,11 +26,11 @@ from llama_index.llms.ollama import Ollama
 import time
 import logging
 
-# Logging configuration
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# MSSQL connection settings
+# MSSQL connection configuration
 server = "ZELIS\\REEDUS"
 database = "LibraryDB"
 username = "sa"
@@ -19,7 +38,7 @@ password = "daryldixon"
 driver = "ODBC Driver 17 for SQL Server"
 schema = "dbo"
 
-# SQLAlchemy connection URL
+# Construct SQLAlchemy connection URL
 connection_url = URL.create(
     "mssql+pyodbc",
     username=username,
@@ -29,53 +48,73 @@ connection_url = URL.create(
     query={"driver": driver}
 )
 
-# SQL result formatter
 def format_sql_result(rows):
-    """Format SQL result with tabulate for cleaner output"""
+    """
+    Format the results of a SQL query using tabulate.
+
+    Parameters:
+    - rows (list[tuple]): List of tuples representing query result rows.
+
+    Returns:
+    - str: A table-formatted string of results or a message if no data found.
+
+    Example:
+        formatted = format_sql_result([(1, "Title"), (2, "Another")])
+    """
     if not rows:
         return "Sonuç bulunamadı"
 
-    headers = [f"Col{i}" for i in range(len(rows[0]))]  # Default headers
+    headers = [f"Col{i}" for i in range(len(rows[0]))]
     return tabulate(rows, headers=headers, tablefmt="grid")
 
-# Execute raw SQL query
 def execute_sql(engine, sql_query):
-    """Execute SQL query and return results"""
+    """
+    Execute a raw SQL query using SQLAlchemy engine.
+
+    Parameters:
+    - engine (sqlalchemy.Engine): SQLAlchemy engine instance.
+    - sql_query (str): SQL statement to execute.
+
+    Returns:
+    - list[tuple] or None: Query results if successful, None on error.
+
+    Example:
+        rows = execute_sql(engine, "SELECT * FROM books")
+    """
     try:
         with engine.connect() as connection:
             result = connection.execute(text(sql_query))
-            rows = result.fetchall()
-            return rows
+            return result.fetchall()
     except Exception as e:
         logger.error(f"SQL execution error: {str(e)}")
         return None
 
-# Ana uygulama bloğu
+# Main application logic
 try:
-    # Create engine
+    # Create database engine
     engine = create_engine(connection_url)
     logger.info("Database connection established successfully")
-    
-    # Check available tables
+
+    # Retrieve list of tables
     inspector = inspect(engine)
     available_tables = inspector.get_table_names(schema=schema)
     logger.info(f"Available tables: {available_tables}")
 
-    # Check for required tables
+    # Ensure required tables exist
     required_tables = {"books", "inventory"}
     missing_tables = required_tables - set(available_tables)
     if missing_tables:
         logger.warning(f"Missing tables - {missing_tables}")
         raise ValueError(f"Required tables missing: {missing_tables}")
 
-    # SQLDatabase wrapper
+    # Create SQLDatabase wrapper
     sql_database = SQLDatabase(
         engine,
         include_tables=list(required_tables),
         schema=schema
     )
 
-    # System prompt
+    # System prompt for SQL generation
     sql_prompt = (
         "You are a SQL expert for a library database. Strictly follow these rules:\n"
         "1. Use EXACT table/column names from schema:\n"
@@ -90,7 +129,7 @@ try:
         "User question: {user_query}\nSQL:"
     )
 
-    # Configure Ollama
+    # Initialize the Ollama LLM with system prompt
     llm = Ollama(
         model="gemma3n",
         request_timeout=120.0,
@@ -98,6 +137,7 @@ try:
         temperature=0.1
     )
 
+    # Create query engine using LlamaIndex
     query_engine = NLSQLTableQueryEngine(
         sql_database=sql_database,
         tables=list(required_tables),
@@ -105,45 +145,46 @@ try:
         synthesize_response=False
     )
 
-    print("\nKütüphane Sistemi Hazır. Kitap ve envanter hakkında soru sorabilirsiniz.")
-    print("Çıkmak için 'exit' yazın.\n")
+    # CLI interface
+    print("\nLibrary System Ready. Ask questions about books or inventory.")
+    print("Type 'exit' to quit.\n")
 
     while True:
         try:
-            user_query = input("\nSorgunuz: ").strip()
+            user_query = input("\nYour question: ").strip()
             if user_query.lower() in ['exit', 'quit']:
                 break
             if not user_query:
                 continue
 
-            logger.info(f"Sorgu: {user_query}")
+            logger.info(f"User query: {user_query}")
             start_time = time.time()
-            
-            # SQL üretimi
+
+            # Generate SQL query
             response = query_engine.query(user_query)
             sql_query = response.metadata.get('sql_query', '')
             exec_time = time.time() - start_time
 
             if not sql_query:
-                print("\nSQL oluşturulamadı")
+                print("\nFailed to generate SQL")
                 continue
 
             result = execute_sql(engine, sql_query)
 
-            print(f"\nSonuç ({exec_time:.2f}s):")
+            print(f"\nResult ({exec_time:.2f}s):")
             if result is not None:
                 print(format_sql_result(result))
             else:
-                print("Sorgu çalıştırılırken hata oluştu")
+                print("Error while executing query")
 
-            print(f"\nOluşturulan SQL: {sql_query}")
+            print(f"\nGenerated SQL: {sql_query}")
 
         except Exception as e:
-            logger.error(f"Sorgu hatası: {str(e)}")
-            print(f"\nHata: Sorgu işlenemedi. Lütfen farklı şekilde ifade edin")
+            logger.error(f"Query processing error: {str(e)}")
+            print(f"\nError: Unable to process query. Please try rephrasing.")
 
-    print("Çıkılıyor...")
+    print("Exiting...")
 
 except Exception as e:
-    logger.exception("Kritik başlatma hatası:")
-    print(f"Sistem hatası: {str(e)}")
+    logger.exception("Critical startup error:")
+    print(f"System error: {str(e)}")
