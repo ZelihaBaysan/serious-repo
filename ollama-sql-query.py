@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # MSSQL connection settings
 server = "ZELIS\\REEDUS"
-database = "LibraryDB"  # Veritabanı ismi değişti
+database = "LibraryDB"
 username = "sa"
 password = "daryldixon"
 driver = "ODBC Driver 17 for SQL Server"
@@ -28,6 +28,17 @@ connection_url = URL.create(
     query={"driver": driver}
 )
 
+def execute_sql(engine, sql_query):
+    """Execute SQL query and return results"""
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text(sql_query))
+            rows = result.fetchall()
+            return rows
+    except Exception as e:
+        logger.error(f"SQL execution error: {str(e)}")
+        return None
+
 try:
     # Create engine
     engine = create_engine(connection_url)
@@ -38,7 +49,7 @@ try:
     available_tables = inspector.get_table_names(schema=schema)
     logger.info(f"Available tables: {available_tables}")
 
-    # Check for required tables (kütüphane tabloları)
+    # Check for required tables
     required_tables = {"books", "inventory"}
     missing_tables = required_tables - set(available_tables)
     if missing_tables:
@@ -52,20 +63,18 @@ try:
         schema=schema
     )
 
-    # Yeni veritabanı yapısı için optimize edilmiş sistem istemi
+    # Enhanced system prompt with table name enforcement
     sql_prompt = (
         "You are a SQL expert for a library database. Strictly follow these rules:\n"
         "1. Use EXACT table/column names from schema:\n"
         "   - books: [book_id, title, author, isbn, publication_year, genre]\n"
         "   - inventory: [inventory_id, book_id, status, last_checkout, due_date]\n"
-        "2. Always use explicit JOIN syntax with aliases:\n"
+        "2. ALWAYS use explicit JOIN syntax:\n"
         "   - books.book_id = inventory.book_id\n"
-        "3. Use parameterized WHERE clauses: WHERE title = 'The Hobbit' (EXACT title match)\n"
-        "4. NEVER use LIKE unless specified\n"
-        "5. Select ONLY necessary columns\n"
-        "6. Handle NULL values with IS NULL/IS NOT NULL\n"
-        "7. Use DISTINCT when fetching unique books\n"
-        "8. Return raw SQL ONLY, no explanations\n\n"
+        "3. Table names MUST be: 'books' and 'inventory' (NEVER modify these names)\n"
+        "4. Select relevant columns from BOTH tables when joining\n"
+        "5. Use exact string matches: WHERE author = 'George Orwell'\n"
+        "6. Return raw SQL ONLY, no explanations\n\n"
         "User question: {user_query}\nSQL:"
     )
 
@@ -77,7 +86,7 @@ try:
         temperature=0.1
     )
 
-    # Create query engine with schema context
+    # Create query engine
     query_engine = NLSQLTableQueryEngine(
         sql_database=sql_database,
         tables=list(required_tables),
@@ -88,18 +97,18 @@ try:
     print("\nKütüphane Sistemi Hazır. Kitap ve envanter hakkında soru sorabilirsiniz.")
     print("Çıkmak için 'exit' yazın.\n")
 
-    def format_sql_result(result):
-        """SQL sonuçlarını daha okunabilir hale getir"""
-        if not result:
+    def format_sql_result(rows):
+        """Format SQL result for better readability"""
+        if not rows:
             return "Sonuç bulunamadı"
         
-        if isinstance(result, list):
-            # Tek sütunlu sonuçlar
-            if len(result) > 0 and isinstance(result[0], tuple) and len(result[0]) == 1:
-                return "\n".join([str(row[0]) for row in result])
-            # Çok sütunlu sonuçlar
-            return "\n".join(["\t".join(map(str, row)) for row in result])
-        return str(result)
+        # Header for tabular output
+        if isinstance(rows[0], tuple):
+            headers = [desc[0] for desc in rows[0].cursor_description]
+            result = "\t".join(headers) + "\n"
+            result += "\n".join(["\t".join(map(str, row)) for row in rows])
+            return result
+        return str(rows)
 
     while True:
         try:
@@ -112,21 +121,26 @@ try:
             logger.info(f"Sorgu: {user_query}")
             start_time = time.time()
             
-            # Execute query
+            # Generate and execute SQL
             response = query_engine.query(user_query)
+            sql_query = response.metadata.get('sql_query', '')
             exec_time = time.time() - start_time
 
-            # Extract and format results
-            sql_query = response.metadata.get('sql_query', '')
-            result = response.metadata.get('result', [])
+            # Validate and execute SQL
+            if not sql_query:
+                print("\nSQL oluşturulamadı")
+                continue
+
+            # Manual execution for better error handling
+            result = execute_sql(engine, sql_query)
             
             print(f"\nSonuç ({exec_time:.2f}s):")
-            print(format_sql_result(result))
-            
-            if sql_query:
-                print(f"\nOluşturulan SQL: {sql_query}")
+            if result is not None:
+                print(format_sql_result(result))
             else:
-                print("\nSQL oluşturulamadı")
+                print("Sorgu çalıştırılırken hata oluştu")
+            
+            print(f"\nOluşturulan SQL: {sql_query}")
 
         except Exception as e:
             logger.error(f"Sorgu hatası: {str(e)}")
